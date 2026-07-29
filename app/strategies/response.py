@@ -6,16 +6,18 @@ from app.dto.context import ExecutionContext
 from app.dto.responses import TravelResponse, DailyItinerary, FlightOption, HotelOption
 
 class StructuredResponseStrategy(ResponseGenerationStrategy):
-    """Parses tool results and agent raw output into typed Pydantic v2 TravelResponse."""
+    """Parses multi-turn tool results and agent raw output into typed Pydantic v2 TravelResponse."""
+
     async def generate_response(self, context: ExecutionContext) -> TravelResponse:
         destination = context.metadata.get("destination", "Target Destination")
         duration_days = context.metadata.get("duration_days", 5)
         
         flights: list[FlightOption] = []
         hotels: list[HotelOption] = []
+        weather_info: dict[str, str] = {}
         applied_prefs: list[str] = []
 
-        # Extract tool results
+        # Extract tool results from multi-turn feedback loop
         for res in context.tool_results:
             if res.status == "SUCCESS" and isinstance(res.output, dict):
                 if res.tool_name in ("search_flights", "flight_search") and "flights" in res.output:
@@ -24,6 +26,8 @@ class StructuredResponseStrategy(ResponseGenerationStrategy):
                 elif res.tool_name in ("search_hotels", "hotel_search") and "hotels" in res.output:
                     for h in res.output["hotels"]:
                         hotels.append(HotelOption(**h))
+                elif res.tool_name in ("get_weather", "weather_search"):
+                    weather_info = res.output
 
         # Default fallbacks if tools returned simulated/empty responses
         if not flights:
@@ -47,15 +51,37 @@ class StructuredResponseStrategy(ResponseGenerationStrategy):
         if context.memory_context.user_preferences:
             applied_prefs = [f"{k}: {v}" for k, v in context.memory_context.user_preferences.items()]
 
-        itinerary = [
-            DailyItinerary(
-                day=i + 1,
-                title=f"Day {i + 1}: Exploring {destination.title()}",
-                activities=[f"Visit top cultural attraction in {destination}", "Guided city tour", "Evening relaxation"],
-                dining_recommendations=["Local specialty restaurant", "Recommended Cafe"]
-            )
-            for i in range(duration_days)
+        # Generate dynamic itinerary based on destination and weather context
+        forecast_condition = weather_info.get("condition", "Clear Sunny Weather")
+        temperature = weather_info.get("temperature", "22°C")
+
+        itinerary = []
+        activity_templates = [
+            (f"Arrival & Check-in at hotel near {destination} center", f"Evening walking tour around main market in {destination}"),
+            (f"Explore historical landmarks & museums in {destination}", f"Sunset viewpoint & photography tour"),
+            (f"Day trip & outdoor nature excursion in {destination}", f"Local cultural performance & dinner"),
+            (f"Shopping at local artisanal quarter in {destination}", f"Gourmet food tasting experience"),
+            (f"Relaxation & spa session in {destination}", f"Farewell dinner & departure preparation")
         ]
+
+        for i in range(duration_days):
+            day_num = i + 1
+            act_pair = activity_templates[i % len(activity_templates)]
+            itinerary.append(
+                DailyItinerary(
+                    day=day_num,
+                    title=f"Day {day_num}: {destination.title()} Experience ({forecast_condition}, {temperature})",
+                    activities=[
+                        f"Morning: {act_pair[0]}",
+                        f"Afternoon: {act_pair[1]}",
+                        f"Evening: Leisure & sightseeing in {destination}"
+                    ],
+                    dining_recommendations=[
+                        f"Local {destination} specialty restaurant",
+                        "Recommended vegetarian friendly café"
+                    ]
+                )
+            )
 
         summary = context.agent_raw_response or f"Customized {duration_days}-day itinerary to {destination} prepared based on your preferences."
 
