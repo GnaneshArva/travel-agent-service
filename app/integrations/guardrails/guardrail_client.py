@@ -1,11 +1,20 @@
+"""
+Integration Client for agentic-ai-guardrails.
+
+Makes HTTP calls to the guardrails microservice (server.py in agentic-ai-guardrails)
+which wraps the GuardrailService facade and runs the full Input/Output pipelines
+(prompt injection, jailbreak, PII, toxicity, hallucination, etc.).
+"""
+
 import httpx
 from typing import Any
 from app.interfaces.guardrail import GuardrailProvider
 from app.config.settings import settings
 from app.utils.logger import logger
 
+
 class GuardrailClient(GuardrailProvider):
-    """Integration Client for agentic-ai-guardrails with standalone fallback."""
+    """Integration Client for agentic-ai-guardrails microservice."""
 
     def __init__(self, service_url: str | None = None):
         self.service_url = service_url or settings.mcp.guardrails_service_url
@@ -18,20 +27,27 @@ class GuardrailClient(GuardrailProvider):
         logger.info("Evaluating input guardrails", component="GuardrailClient", session_id=session_id)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(f"{self.service_url}/guardrails/input/validate", json={"text": text, "session_id": session_id})
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data.get("is_allowed", True), data.get("sanitized_text", text), data.get("metadata", {})
-        except Exception:
-            logger.info("Guardrails service unreachable. Permitting request via local verification.", component="GuardrailClient")
+                resp = await client.post(
+                    f"{self.service_url}/guardrails/input/validate",
+                    json={"text": text, "session_id": session_id},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return (
+                    data["is_allowed"],
+                    data["sanitized_text"],
+                    data.get("metadata", {}),
+                )
+        except httpx.ConnectError:
+            logger.warning(
+                f"Guardrails service unreachable at {self.service_url}. Falling back to local check.",
+                component="GuardrailClient",
+            )
+        except Exception as exc:
+            logger.error(f"Input guardrail call failed: {exc}", component="GuardrailClient")
 
-        # Fallback basic prompt injection check
-        forbidden_terms = ["ignore previous instructions", "system prompt leak"]
-        for term in forbidden_terms:
-            if term in text.lower():
-                return False, f"Input blocked due to policy term: {term}", {"reason": "prompt_injection"}
-
-        return True, text, {"mode": "local_fallback"}
+        # Fallback: basic prompt injection check when service is unavailable
+        return self._local_input_fallback(text)
 
     async def validate_output(self, text: str, session_id: str | None = None) -> tuple[bool, str, dict[str, Any]]:
         if not settings.features.enable_guardrails:
@@ -40,11 +56,43 @@ class GuardrailClient(GuardrailProvider):
         logger.info("Evaluating output guardrails", component="GuardrailClient", session_id=session_id)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(f"{self.service_url}/guardrails/output/validate", json={"text": text, "session_id": session_id})
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data.get("is_allowed", True), data.get("sanitized_text", text), data.get("metadata", {})
-        except Exception:
-            pass
+                resp = await client.post(
+                    f"{self.service_url}/guardrails/output/validate",
+                    json={"text": text, "session_id": session_id},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return (
+                    data["is_allowed"],
+                    data["sanitized_text"],
+                    data.get("metadata", {}),
+                )
+        except httpx.ConnectError:
+            logger.warning(
+                f"Guardrails service unreachable at {self.service_url}. Falling back to pass-through.",
+                component="GuardrailClient",
+            )
+        except Exception as exc:
+            logger.error(f"Output guardrail call failed: {exc}", component="GuardrailClient")
+
+        return True, text, {"mode": "local_fallback"}
+
+    # ── Local fallback (used only when the guardrails service is down) ──────
+
+    @staticmethod
+    def _local_input_fallback(text: str) -> tuple[bool, str, dict[str, Any]]:
+        """Minimal safety net when the guardrails microservice is unavailable."""
+        forbidden_patterns = [
+            "ignore previous instructions",
+            "ignore all instructions",
+            "disregard previous",
+            "system prompt leak",
+            "reveal your prompt",
+            "forget your instructions",
+        ]
+        lower = text.lower()
+        for pattern in forbidden_patterns:
+            if pattern in lower:
+                return False, f"Input blocked due to policy term: {pattern}", {"reason": "prompt_injection", "mode": "local_fallback"}
 
         return True, text, {"mode": "local_fallback"}
