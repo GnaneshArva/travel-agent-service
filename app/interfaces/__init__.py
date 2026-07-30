@@ -1,3 +1,4 @@
+from app.interfaces.agent import BaseAgent
 from app.interfaces.memory import MemoryProvider
 from app.interfaces.knowledge import KnowledgeProvider
 from app.interfaces.prompt import PromptProvider
@@ -12,6 +13,7 @@ from app.interfaces.strategies import (
 )
 
 __all__ = [
+    "BaseAgent",
     "MemoryProvider",
     "KnowledgeProvider",
     "PromptProvider",
