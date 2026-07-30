@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
-from app.controllers import travel_router
+from app.controllers import travel_router, eval_router
 from app.config.settings import settings
 from app.exceptions.exceptions import AgentException
 from app.utils.logger import logger
@@ -14,6 +14,7 @@ app = FastAPI(
 
 # Register routes
 app.include_router(travel_router)
+app.include_router(eval_router)
 
 @app.get("/health", tags=["Health"])
 async def health_check():
